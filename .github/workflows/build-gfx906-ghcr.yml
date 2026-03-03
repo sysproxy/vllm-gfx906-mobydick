@@ -18,31 +18,41 @@ on:
         required: false
         type: string
         default: ""
-      base_pytorch_image:
-        description: "Base PyTorch ROCm image"
+      base_rocm_image:
+        description: "Base ROCm dev image"
         required: true
         type: string
-        default: "docker.io/mixa3607/pytorch-gfx906:v2.9.0-rocm-6.3.3"
-      vllm_repo:
-        description: "Repo URL to clone for vLLM build stage"
+        default: "rocm/dev-ubuntu-24.04:6.3.4-complete"
+      pytorch_branch:
+        description: "PyTorch git tag/branch"
         required: true
         type: string
-        default: "https://github.com/ai-infos/vllm-gfx906-mobydick.git"
-      vllm_branch:
-        description: "Branch/tag to clone for vLLM build stage"
-        required: true
-        type: string
-        default: "main"
+        default: "v2.10.0"
       triton_repo:
-        description: "Repo URL to clone for Triton build stage"
+        description: "Triton repo URL"
         required: true
         type: string
         default: "https://github.com/ai-infos/triton-gfx906.git"
       triton_branch:
-        description: "Branch/tag to clone for Triton build stage"
+        description: "Triton git tag/branch"
         required: true
         type: string
-        default: "v3.5.1+gfx906"
+        default: "v3.6.0+gfx906"
+      vllm_repo:
+        description: "vLLM repo URL"
+        required: true
+        type: string
+        default: "https://github.com/ai-infos/vllm-gfx906-mobydick.git"
+      vllm_branch:
+        description: "vLLM git tag/branch"
+        required: true
+        type: string
+        default: "main"
+      max_jobs:
+        description: "MAX_JOBS for PyTorch build (empty = nproc)"
+        required: false
+        type: string
+        default: ""
   push:
     branches:
       - feat/ml-style-dockerfile
@@ -65,11 +75,13 @@ jobs:
       image_ref: ${{ steps.vars.outputs.image_ref }}
       push_image: ${{ steps.vars.outputs.push_image }}
       tags: ${{ steps.vars.outputs.tags }}
-      base_pytorch_image: ${{ steps.vars.outputs.base_pytorch_image }}
-      vllm_repo: ${{ steps.vars.outputs.vllm_repo }}
-      vllm_branch: ${{ steps.vars.outputs.vllm_branch }}
+      base_rocm_image: ${{ steps.vars.outputs.base_rocm_image }}
+      pytorch_branch: ${{ steps.vars.outputs.pytorch_branch }}
       triton_repo: ${{ steps.vars.outputs.triton_repo }}
       triton_branch: ${{ steps.vars.outputs.triton_branch }}
+      vllm_repo: ${{ steps.vars.outputs.vllm_repo }}
+      vllm_branch: ${{ steps.vars.outputs.vllm_branch }}
+      max_jobs: ${{ steps.vars.outputs.max_jobs }}
     steps:
       - name: Compute variables
         id: vars
@@ -89,11 +101,13 @@ jobs:
           {
             echo "image_ref=${IMAGE_REF}"
             echo "push_image=${{ inputs.push_image != false }}"
-            echo "base_pytorch_image=${{ inputs.base_pytorch_image || 'docker.io/mixa3607/pytorch-gfx906:v2.9.0-rocm-6.3.3' }}"
+            echo "base_rocm_image=${{ inputs.base_rocm_image || 'rocm/dev-ubuntu-24.04:6.3.4-complete' }}"
+            echo "pytorch_branch=${{ inputs.pytorch_branch || 'v2.10.0' }}"
+            echo "triton_repo=${{ inputs.triton_repo || 'https://github.com/ai-infos/triton-gfx906.git' }}"
+            echo "triton_branch=${{ inputs.triton_branch || 'v3.6.0+gfx906' }}"
             echo "vllm_repo=${{ inputs.vllm_repo || 'https://github.com/ai-infos/vllm-gfx906-mobydick.git' }}"
             echo "vllm_branch=${{ inputs.vllm_branch || 'main' }}"
-            echo "triton_repo=${{ inputs.triton_repo || 'https://github.com/ai-infos/triton-gfx906.git' }}"
-            echo "triton_branch=${{ inputs.triton_branch || 'v3.5.1+gfx906' }}"
+            echo "max_jobs=${{ inputs.max_jobs || '' }}"
             echo "tags<<EOF"
             echo "${IMAGE_REF}:${PRIMARY_TAG}"
             echo "${IMAGE_REF}:sha-${SHORT_SHA}"
@@ -102,6 +116,42 @@ jobs:
             fi
             echo "EOF"
           } >> "${GITHUB_OUTPUT}"
+
+  build-torch-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    needs: prepare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm cache for build_torch target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./vllm.Dockerfile
+          target: build_torch
+          push: false
+          build-args: |
+            BASE_ROCM_IMAGE=${{ needs.prepare.outputs.base_rocm_image }}
+            PYTORCH_BRANCH=${{ needs.prepare.outputs.pytorch_branch }}
+            MAX_JOBS=${{ needs.prepare.outputs.max_jobs }}
+          cache-from: |
+            type=gha,scope=vllm-gfx906-torch
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-torch
+          cache-to: |
+            type=gha,mode=max,scope=vllm-gfx906-torch
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-torch,mode=max
 
   build-triton-cache:
     runs-on: ubuntu-latest
@@ -129,9 +179,7 @@ jobs:
           target: build_triton
           push: false
           build-args: |
-            BASE_PYTORCH_IMAGE=${{ needs.prepare.outputs.base_pytorch_image }}
-            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
-            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
+            BASE_ROCM_IMAGE=${{ needs.prepare.outputs.base_rocm_image }}
             TRITON_REPO=${{ needs.prepare.outputs.triton_repo }}
             TRITON_BRANCH=${{ needs.prepare.outputs.triton_branch }}
           cache-from: |
@@ -141,51 +189,13 @@ jobs:
             type=gha,mode=max,scope=vllm-gfx906-triton
             type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-triton,mode=max
 
-  build-vllm-cache:
-    runs-on: ubuntu-latest
-    timeout-minutes: 330
-    needs: prepare
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Warm cache for build_vllm target
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./vllm.Dockerfile
-          target: build_vllm
-          push: false
-          build-args: |
-            BASE_PYTORCH_IMAGE=${{ needs.prepare.outputs.base_pytorch_image }}
-            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
-            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
-            TRITON_REPO=${{ needs.prepare.outputs.triton_repo }}
-            TRITON_BRANCH=${{ needs.prepare.outputs.triton_branch }}
-          cache-from: |
-            type=gha,scope=vllm-gfx906-vllm
-            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-vllm
-          cache-to: |
-            type=gha,mode=max,scope=vllm-gfx906-vllm
-            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-vllm,mode=max
-
   build-and-push-final:
     runs-on: ubuntu-latest
     timeout-minutes: 330
     needs:
       - prepare
+      - build-torch-cache
       - build-triton-cache
-      - build-vllm-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -213,17 +223,19 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           provenance: false
           build-args: |
-            BASE_PYTORCH_IMAGE=${{ needs.prepare.outputs.base_pytorch_image }}
-            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
-            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
+            BASE_ROCM_IMAGE=${{ needs.prepare.outputs.base_rocm_image }}
+            PYTORCH_BRANCH=${{ needs.prepare.outputs.pytorch_branch }}
             TRITON_REPO=${{ needs.prepare.outputs.triton_repo }}
             TRITON_BRANCH=${{ needs.prepare.outputs.triton_branch }}
+            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
+            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
+            MAX_JOBS=${{ needs.prepare.outputs.max_jobs }}
           cache-from: |
+            type=gha,scope=vllm-gfx906-torch
             type=gha,scope=vllm-gfx906-triton
-            type=gha,scope=vllm-gfx906-vllm
             type=gha,scope=vllm-gfx906-final
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-torch
             type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-triton
-            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-vllm
             type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-final
           cache-to: |
             type=gha,mode=max,scope=vllm-gfx906-final
