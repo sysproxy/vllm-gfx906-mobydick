@@ -64,10 +64,6 @@ permissions:
   contents: read
   packages: write
 
-concurrency:
-  group: build-gfx906-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
