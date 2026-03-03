@@ -1,0 +1,253 @@
+name: Build GFX906 image to GHCR
+
+on:
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: "Push final image to GHCR"
+        required: true
+        type: boolean
+        default: true
+      image_name:
+        description: "Image name under ghcr.io/<owner>/"
+        required: true
+        type: string
+        default: "vllm-gfx906-mobydick"
+      image_tag:
+        description: "Optional explicit tag (empty = auto)"
+        required: false
+        type: string
+        default: ""
+      base_pytorch_image:
+        description: "Base PyTorch ROCm image"
+        required: true
+        type: string
+        default: "docker.io/mixa3607/pytorch-gfx906:v2.9.1-rocm-6.3.4"
+      vllm_repo:
+        description: "Repo URL to clone for vLLM build stage"
+        required: true
+        type: string
+        default: "https://github.com/ai-infos/vllm-gfx906-mobydick.git"
+      vllm_branch:
+        description: "Branch/tag to clone for vLLM build stage"
+        required: true
+        type: string
+        default: "main"
+      triton_repo:
+        description: "Repo URL to clone for Triton build stage"
+        required: true
+        type: string
+        default: "https://github.com/ai-infos/triton-gfx906.git"
+      triton_branch:
+        description: "Branch/tag to clone for Triton build stage"
+        required: true
+        type: string
+        default: "v3.5.1+gfx906"
+  push:
+    branches:
+      - feat/ml-style-dockerfile
+    paths:
+      - "vllm.Dockerfile"
+      - ".github/workflows/build-gfx906-ghcr.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-gfx906-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.vars.outputs.image_ref }}
+      push_image: ${{ steps.vars.outputs.push_image }}
+      tags: ${{ steps.vars.outputs.tags }}
+      base_pytorch_image: ${{ steps.vars.outputs.base_pytorch_image }}
+      vllm_repo: ${{ steps.vars.outputs.vllm_repo }}
+      vllm_branch: ${{ steps.vars.outputs.vllm_branch }}
+      triton_repo: ${{ steps.vars.outputs.triton_repo }}
+      triton_branch: ${{ steps.vars.outputs.triton_branch }}
+    steps:
+      - name: Compute variables
+        id: vars
+        shell: bash
+        run: |
+          IMAGE_NAME="${{ inputs.image_name || 'vllm-gfx906-mobydick' }}"
+          IMAGE_REF="ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}"
+          SHORT_SHA="${GITHUB_SHA::12}"
+          REF_NAME="${GITHUB_REF_NAME//\//-}"
+
+          if [[ -n "${{ inputs.image_tag }}" ]]; then
+            PRIMARY_TAG="${{ inputs.image_tag }}"
+          else
+            PRIMARY_TAG="${REF_NAME}-${SHORT_SHA}"
+          fi
+
+          {
+            echo "image_ref=${IMAGE_REF}"
+            echo "push_image=${{ inputs.push_image != false }}"
+            echo "base_pytorch_image=${{ inputs.base_pytorch_image || 'docker.io/mixa3607/pytorch-gfx906:v2.9.1-rocm-6.3.4' }}"
+            echo "vllm_repo=${{ inputs.vllm_repo || 'https://github.com/ai-infos/vllm-gfx906-mobydick.git' }}"
+            echo "vllm_branch=${{ inputs.vllm_branch || 'main' }}"
+            echo "triton_repo=${{ inputs.triton_repo || 'https://github.com/ai-infos/triton-gfx906.git' }}"
+            echo "triton_branch=${{ inputs.triton_branch || 'v3.5.1+gfx906' }}"
+            echo "tags<<EOF"
+            echo "${IMAGE_REF}:${PRIMARY_TAG}"
+            echo "${IMAGE_REF}:sha-${SHORT_SHA}"
+            if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+              echo "${IMAGE_REF}:latest"
+            fi
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+  build-triton-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    needs: prepare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm cache for build_triton target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./vllm.Dockerfile
+          target: build_triton
+          push: false
+          build-args: |
+            BASE_PYTORCH_IMAGE=${{ needs.prepare.outputs.base_pytorch_image }}
+            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
+            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
+            TRITON_REPO=${{ needs.prepare.outputs.triton_repo }}
+            TRITON_BRANCH=${{ needs.prepare.outputs.triton_branch }}
+          cache-from: |
+            type=gha,scope=vllm-gfx906-triton
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-triton
+          cache-to: |
+            type=gha,mode=max,scope=vllm-gfx906-triton
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-triton,mode=max
+
+  build-vllm-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    needs: prepare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Warm cache for build_vllm target
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./vllm.Dockerfile
+          target: build_vllm
+          push: false
+          build-args: |
+            BASE_PYTORCH_IMAGE=${{ needs.prepare.outputs.base_pytorch_image }}
+            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
+            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
+            TRITON_REPO=${{ needs.prepare.outputs.triton_repo }}
+            TRITON_BRANCH=${{ needs.prepare.outputs.triton_branch }}
+          cache-from: |
+            type=gha,scope=vllm-gfx906-vllm
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-vllm
+          cache-to: |
+            type=gha,mode=max,scope=vllm-gfx906-vllm
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-vllm,mode=max
+
+  build-and-push-final:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    needs:
+      - prepare
+      - build-triton-cache
+      - build-vllm-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build final image and optionally push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./vllm.Dockerfile
+          target: final
+          push: ${{ needs.prepare.outputs.push_image == 'true' }}
+          tags: ${{ needs.prepare.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: false
+          build-args: |
+            BASE_PYTORCH_IMAGE=${{ needs.prepare.outputs.base_pytorch_image }}
+            VLLM_REPO=${{ needs.prepare.outputs.vllm_repo }}
+            VLLM_BRANCH=${{ needs.prepare.outputs.vllm_branch }}
+            TRITON_REPO=${{ needs.prepare.outputs.triton_repo }}
+            TRITON_BRANCH=${{ needs.prepare.outputs.triton_branch }}
+          cache-from: |
+            type=gha,scope=vllm-gfx906-triton
+            type=gha,scope=vllm-gfx906-vllm
+            type=gha,scope=vllm-gfx906-final
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-triton
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-vllm
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-final
+          cache-to: |
+            type=gha,mode=max,scope=vllm-gfx906-final
+            type=registry,ref=${{ needs.prepare.outputs.image_ref }}:cache-final,mode=max
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - prepare
+      - build-and-push-final
+    if: ${{ needs.prepare.outputs.push_image == 'true' }}
+    steps:
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Smoke test import of torch and vllm
+        shell: bash
+        run: |
+          IMAGE="$(echo "${{ needs.prepare.outputs.tags }}" | head -n 1)"
+          echo "Testing image: ${IMAGE}"
+          docker pull "${IMAGE}"
+          docker run --rm --entrypoint python "${IMAGE}" -c "import torch, vllm; print('torch', torch.__version__); print('vllm import ok')"
