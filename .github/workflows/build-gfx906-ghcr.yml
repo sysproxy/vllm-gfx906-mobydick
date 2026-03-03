@@ -22,7 +22,7 @@ on:
         description: "Base PyTorch ROCm image"
         required: true
         type: string
-        default: "docker.io/mixa3607/pytorch-gfx906:v2.9.1-rocm-6.3.4"
+        default: "docker.io/mixa3607/pytorch-gfx906:v2.9.0-rocm-6.3.3"
       vllm_repo:
         description: "Repo URL to clone for vLLM build stage"
         required: true
@@ -89,7 +89,7 @@ jobs:
           {
             echo "image_ref=${IMAGE_REF}"
             echo "push_image=${{ inputs.push_image != false }}"
-            echo "base_pytorch_image=${{ inputs.base_pytorch_image || 'docker.io/mixa3607/pytorch-gfx906:v2.9.1-rocm-6.3.4' }}"
+            echo "base_pytorch_image=${{ inputs.base_pytorch_image || 'docker.io/mixa3607/pytorch-gfx906:v2.9.0-rocm-6.3.3' }}"
             echo "vllm_repo=${{ inputs.vllm_repo || 'https://github.com/ai-infos/vllm-gfx906-mobydick.git' }}"
             echo "vllm_branch=${{ inputs.vllm_branch || 'main' }}"
             echo "triton_repo=${{ inputs.triton_repo || 'https://github.com/ai-infos/triton-gfx906.git' }}"

@@ -1,4 +1,4 @@
-ARG BASE_PYTORCH_IMAGE="docker.io/mixa3607/pytorch-gfx906:v2.9.1-rocm-6.3.4"
+ARG BASE_PYTORCH_IMAGE="docker.io/mixa3607/pytorch-gfx906:v2.9.0-rocm-6.3.3"
 ARG VLLM_REPO="https://github.com/ai-infos/vllm-gfx906-mobydick.git"
 ARG VLLM_BRANCH="main"
 ARG TRITON_REPO="https://github.com/ai-infos/triton-gfx906.git"
