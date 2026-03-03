@@ -8,6 +8,8 @@ ARG ROCBLAS_REPO="https://github.com/ROCm/rocBLAS"
 ARG TENSILE_REPO="https://github.com/ROCm/Tensile"
 ARG RCCL_REPO="https://github.com/ROCm/rccl"
 
+ARG AMDSMI_VERSION="6.3.3"
+
 ARG PYTORCH_REPO="https://github.com/pytorch/pytorch.git"
 ARG PYTORCH_BRANCH="v2.10.0"
 ARG PYTORCH_VISION_REPO="https://github.com/pytorch/vision.git"
@@ -47,7 +49,7 @@ RUN apt-get update && apt-get install -y software-properties-common git python3-
     update-alternatives --set python3 /usr/bin/python3.12 && \
     ln -sf /usr/bin/python3.12-config /usr/bin/python3-config && \
     python3 -m pip config set global.break-system-packages true && \
-    pip install amdsmi==$(cat /opt/ROCM_VERSION_FULL) && \
+    pip install amdsmi==${AMDSMI_VERSION} && \
     true
 
 ARG ROCM_ARCH
